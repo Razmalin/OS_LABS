@@ -1,102 +1,91 @@
-
 #include <iostream>
-
 #include <windows.h>
-#include <fileapi.h>
-#include <synchapi.h>
+#include <time.h>
 
 using namespace std;
 
-const unsigned N = 100000000;
-const unsigned blockSize = 60;			// 03050(6)
-const unsigned threadsCount = 16;		// 1, 2, 4, 8, 12, 16
+const int N = 100000000;
+const int blockSize = 60;            // 03050(6)
+const int threadsCount = 16;         // 1, 2, 4, 8, 12, 16
+const int TIMES = 10;                // 10 times do test for average result
+int currentPos = 0;
+double pi = 0.0;
 
-void calculatorNumberPi(void* parametersStart);
+LPCRITICAL_SECTION section = new CRITICAL_SECTION;
+
+DWORD WINAPI calculatorNumberPi(LPVOID lpParam);
 
 int main() {
+    system("chcp 437");
+    system("cls");
+    cout << "This is a console application by Artem Ivanov,\n";
+    cout << "a student of group 0305, for laboratory work\n";
+    cout << "on the study of processor management using the Win32 API.\n\n";
 
-	system("chcp 437");
-	system("cls");
-	cout << "This is a console application by Artem Ivanov,\n";
-	cout << "a student of group 0305, for laboratory work\n";
-	cout << "on the study of processor management using the Win32 API.\n\n";
-	
-	int start, finish;
+    DWORD start_time;
+    HANDLE threads[threadsCount];
+    int position[threadsCount];
+    double time = 0.0;
+    for (int j = 0; j < TIMES; j++) {
+        pi = 0.0;
+        InitializeCriticalSection(section);
 
-	// array of parameters are taking by each thread
+        for (int i = 0; i < threadsCount; ++i) {
+            position[i] = blockSize * i;
+            currentPos = position[i];
+            threads[i] = CreateThread(
+                NULL,               // default security attributes
+                0,                  // use default stack size  
+                calculatorNumberPi,   // thread function name
+                &position[i],       // arguments for threaded function
+                CREATE_SUSPENDED,   // created stopped (explanation below)
+                NULL);              // returns the thread identifier
+        }
 
-	HANDLE threads[threadsCount];
-	void* params[threadsCount][3];
-	int startingOperations[threadsCount];
-	HANDLE mutex = CreateMutex(NULL, FALSE, NULL);
-	double pi = 0;
+                                //explanation
+        // threads are suspended because it takes time to create a thread, 
+        // during which previously created threads will be executed, 
+        // which reduces the accuracy of the TIME measurement.
 
+        start_time = clock();
 
-	for (int i = 0; i < threadsCount; ++i) {
-		startingOperations[i] = i * blockSize;
-		params[i][0] = &pi;
-		params[i][1] = startingOperations + i;
-		params[i][2] = &mutex;
+        for (int i = 0; i < threadsCount; ++i)
+            ResumeThread(threads[i]);
 
-		threads[i] = CreateThread(
-			NULL,					// default security attributes	
-			0,						// use default stack size  
-			(LPTHREAD_START_ROUTINE)
-			calculatorNumberPi,		// thread function name
-			params[i],				// arguments for the threading function
-			CREATE_SUSPENDED,		// create suspended (explanation below)
-			NULL					// returns the thread identifier
-		);
-							//explanation
-		// threads are suspended because it takes time to create a thread, 
-		// during which previously created threads will be executed, 
-		// which reduces the accuracy of the TIME measurement. 
-	}
+        WaitForMultipleObjects(threadsCount, threads, TRUE, INFINITE);
 
-	start = GetTickCount();
-	for (int i = 0; i < threadsCount; ++i)
-		ResumeThread(threads[i]);
+        pi /= (long double)N;
 
-	WaitForMultipleObjects(threadsCount, threads, TRUE, INFINITE);
-	finish = GetTickCount();
+        DeleteCriticalSection(section);
 
-	cout.precision(N);
-	int time = finish - start;
-	cout << "Pi - " << pi << endl << "Time - " << time << " ms." << endl;
+        time += clock() - start_time;
 
-	// close handles of threads
-	for (int i = 0; i < threadsCount; ++i)
-		CloseHandle(threads[i]);
-	CloseHandle(mutex);
-
-	return 0;
+        // close handles of threads
+        for (int i = 0; i < threadsCount; ++i)
+            CloseHandle(threads[i]);
+    }
+    printf("Pi -  %.10lf\n", pi);
+    cout << endl << "Time - " << (long double)(time / TIMES) / CLOCKS_PER_SEC << " ms." << endl;
 }
 
-void calculatorNumberPi(void* parametersStart) {
-	// convert input variable to array of void* pointers in order to get params
-	void** parameters = (void**)parametersStart;
-
-	// get params from input array
-	double* piPart = (double*)(parameters[0]);					// ... - address of calculated pieces of num pi
-	unsigned start_block_adress = *(unsigned*)(parameters[1]);	// ... - determines the location of the blocks
-
-	HANDLE mutex = *(HANDLE*)(parameters[2]);
-
-	double keepingPi = 0;
-
-	// while we are not put of pi bounds
-	while (start_block_adress < N) {
-		// calculate block using given formula
-		for (int i = start_block_adress; i < start_block_adress + blockSize; ++i)
-			keepingPi += 4 / (1 + ((i + 0.5) / N) * ((i + 0.5) / N));
-
-		// go to next block
-		start_block_adress += threadsCount * blockSize;
-
-	}
-
-	WaitForSingleObject(mutex, INFINITE);
-	// an answer is a sum of all parts calculated by threads
-	*piPart += keepingPi / N;
-	ReleaseMutex(mutex);
+DWORD WINAPI calculatorNumberPi(LPVOID lpParam) {
+    int* start_block_adress = (int*)lpParam;
+    int end = *start_block_adress + blockSize;
+    long double x, keepingPi;
+    while (*start_block_adress < N) {
+        keepingPi = 0.0;
+        // calculate block using given formula
+        for (int i = *start_block_adress; (i < end) && (i < N); ++i) {
+            x = (i + 0.5) / N;
+            keepingPi += (4 / (1 + x * x));
+        }
+        EnterCriticalSection(section);
+        // an answer is a sum of all parts calculated by threads
+        pi += keepingPi;
+        currentPos += blockSize;
+        *start_block_adress = currentPos;
+        LeaveCriticalSection(section);
+        end = *start_block_adress + blockSize;
+    }
+    return 0;
 }
